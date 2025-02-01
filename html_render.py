@@ -1,5 +1,6 @@
 import boto3, requests, uuid
 from boto3.dynamodb.conditions import Key, Attr
+from decimal import Decimal
 
 import const, token
 
@@ -26,6 +27,12 @@ def pauseConvert(pause):
 
 
 def convertBodyParams(body):
+    currency_select = body.get('currency_select', [None])[0]
+    currency_other = body.get('currency_other', [None])[0]
+    if currency_select == 'other':
+        currency = currency_other
+    else:
+        currency = currency_select
     return {
         "token": body.get('token', [None])[0],
         "name": body.get('name', [None])[0],
@@ -35,7 +42,8 @@ def convertBodyParams(body):
         "unit": body.get('unit', [None])[0],
         "payment_method": body.get('payment_method', [None])[0],
         "pause": "pause" in body.get('pause', [None]),
-        "memo": body.get('memo', [None])[0]
+        "memo": body.get('memo', [None])[0],
+        "currency": currency
     }
 
 
@@ -194,7 +202,20 @@ def formHtml(text):
         </div>
         <div class="form-item">
             <label>料金</label>
-            <input type="number" name="price" id="price" min="0" step="1" required>
+            <input type="number" name="price" id="price" min="0" step="any" required>
+        </div>
+        <div class="form-item">
+            <label>通貨</label>
+            <select name="currency_select" id="currency_select" required onchange="toggleCurrencyOther(this.value)">
+                <option value="JPY">日本円（JPY）</option>
+                <option value="USD">米ドル（USD）</option>
+                <option value="EUR">ユーロ（EUR）</option>
+                <option value="other">その他</option>
+            </select>
+        </div>
+        <div class="form-item" id="currency_other_container" style="display: none;">
+            <label>通貨コード (例: GBP)</label>
+            <input type="text" name="currency_other" id="currency_other">
         </div>
         <div class="form-item">
             <label>次回更新日</label>
@@ -231,10 +252,19 @@ def formHtml(text):
             <input type="submit" value="{text}">
         </div>
     </form>
+    <script>
+    function toggleCurrencyOther(value) {{
+        var container = document.getElementById('currency_other_container');
+        if (value === 'other') {{
+            container.style.display = 'block';
+        }} else {{
+            container.style.display = 'none';
+        }}
+    }}
+    </script>
     """
     
     if text == "更新":
-        
         html += """
         <div class="form-item delete">
             <button onclick="delete_item()">削除</button>
@@ -271,6 +301,17 @@ def getUserItem():
             document.getElementById('payment_method').value = item.payment_method;
             document.getElementById('pause').checked = item.pause;
             document.getElementById('memo').value = item.memo ? item.memo : "";
+            
+            // 通貨フィールドの設定
+            if (item.currency === "JPY" || item.currency === "USD" || item.currency === "EUR") {
+                document.getElementById('currency_select').value = item.currency;
+                document.getElementById('currency_other_container').style.display = 'none';
+            } else {
+                document.getElementById('currency_select').value = "other";
+                document.getElementById('currency_other').value = item.currency;
+                document.getElementById('currency_other_container').style.display = 'block';
+            }
+            
 		} catch (error) {
 			console.error(error);
 			alert(error);
@@ -318,6 +359,24 @@ def getUserItems():
     
     script = """
     let idToken;
+    let exchangeRates = {};
+
+    // 為替レートを取得する関数
+    async function getExchangeRates() {
+        try {
+            const rateResponse = await fetch('https://api.exchangerate-api.com/v4/latest/JPY');
+            const rateData = await rateResponse.json();
+            if (!rateData.rates) {
+                console.error("為替レート情報が取得できませんでした:", rateData);
+                return {};
+            }
+            return rateData.rates;
+        } catch (error) {
+            console.error('Exchange rate error:', error);
+            return {};
+        }
+    }
+
     function unit(word) {
         if (word === 'month') {
             return '月';
@@ -334,29 +393,47 @@ def getUserItems():
     function pause(status) {
         return status ? '停止中' : '契約中';
     }
+
     async function getUserData() {
         try {
-			idToken = await liff.getIDToken();
-			const response = await fetch(`https://subscription.somando.jp/subscriptionLINEBotLIFF/api/items?token=${idToken}`, {
-				method: 'GET',
-				headers: {
-					'Content-Type': 'application/json'
-				}
-			});
-			const data = await response.json();
+            idToken = await liff.getIDToken();
+            // getExchangeRates() を呼び出して exchangeRates を設定
+            exchangeRates = await getExchangeRates() || {};  
+            const response = await fetch(`https://subscription.somando.jp/subscriptionLINEBotLIFF/api/items?token=${idToken}`, {
+                method: 'GET',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+            const data = await response.json();
             document.getElementById('fetch-content').innerHTML = "";
-            data.forEach((item) => document.getElementById('fetch-content').innerHTML += createItemElement(item));
-		} catch (error) {
-			console.error(error);
-			alert(error);
-		}
+            data.forEach((item) => {
+                document.getElementById('fetch-content').innerHTML += createItemElement(item);
+            });
+        } catch (error) {
+            console.error(error);
+            alert(error);
+        }
     }
+
     function createItemElement(item) {
+        let priceDisplay = "";
+        if (item.currency === "JPY") {
+            priceDisplay = "JPY " + Number(item.price).toLocaleString();
+        } else {
+            if (exchangeRates[item.currency]) {
+                let factor = 1 / exchangeRates[item.currency];
+                let converted = (item.price * factor).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+                priceDisplay = item.currency + " " + Number(item.price).toFixed(2) + "（約 JPY " + converted + "）";
+            } else {
+                priceDisplay = item.currency + " " + Number(item.price).toFixed(2) + "（レート取得エラー）";
+            }
+        }
         return `
             <div class="item">
                 <a href="https://subscription.somando.jp/subscriptionLINEBotLIFF/items/${item.id}">
                     <h2>${item.name}</h2>
-                    <p class="price">¥${item.price.toLocaleString()}</p>
+                    <p class="price">${priceDisplay}</p>
                     <p class="next">次回請求日: ${item.next_date} (${item.interval}ヶ${unit(item.unit)}毎)</p>
                     <p class="payment">請求先: ${item.payment_method}</p>
                     <p class="status">ステータス: ${pause(item.pause)}</p>
@@ -364,14 +441,15 @@ def getUserItems():
             </div>
         `;
     }
+
     liff.init({ liffId: "2006629352-naO0NMkB" })
-		.then(() => {
-			if (!liff.isLoggedIn()) {
-				liff.login();
-			} else {
-				getUserData();
-			}
-		})
+        .then(() => {
+            if (!liff.isLoggedIn()) {
+                liff.login();
+            } else {
+                getUserData();
+            }
+        });
     """
     
     html = html_format("アイテム一覧", "Loading...", script)
@@ -385,13 +463,10 @@ def setUserItem(path_params, body, update=True):
     user_id = user.get("sub", None)
     
     if user_id is None:
-        
         return html_format("エラー", "ユーザーが照合できませんでした。")
     
     if update:
-        
         item_id = path_params.get("item_id")
-        
         response = table.query(
             KeyConditionExpression=Key('id').eq(item_id),
             FilterExpression=Attr('user').eq(user_id)
@@ -399,23 +474,21 @@ def setUserItem(path_params, body, update=True):
         items = response.get('Items', [])
         
         if update and len(items) == 0:
-            
             return html_format("エラー", "アイテムが見つかりませんでした。")
-    
     else:
-        
         item_id = str(uuid.uuid4())
     
     item_data = {
         'id': item_id,
         'user': user_id,
         'name': body.get("name"),
-        'price': int(body.get("price")),
+        'price': Decimal(str(body.get("price"))),
         'next_date': body.get("next_date"),
         'interval': int(body.get("interval")),
         'unit': body.get("unit"),
         'payment_method': body.get("payment_method"),
-        'pause': bool(body.get("pause"))
+        'pause': bool(body.get("pause")),
+        'currency': body.get("currency")
     }
     
     if body.get("memo"):
@@ -425,12 +498,17 @@ def setUserItem(path_params, body, update=True):
         Item=item_data
     )
     
-    body = f"""
+    if item_data["currency"] == "JPY":
+        price_str = "JPY " + format(int(item_data["price"]), ",")
+    else:
+        price_str = f'{item_data["currency"]} {float(item_data["price"]):.2f}'
+    
+    body_html = f"""
     {"更新" if update else "作成"}が完了しました。
     <div id="fetch-content">
         <div class="item">
             <h2>{item_data["name"]}</h2>
-            <p class="price">¥{item_data["price"]}</p>
+            <p class="price">{price_str}</p>
             <p class="next">次回請求日: {item_data["next_date"]} ({item_data["interval"]}ヶ{unitConvert(item_data["unit"])}毎)</p>
             <p class="payment">請求先: {item_data["payment_method"]}</p>
             <p class="status">ステータス: {pauseConvert(item_data["pause"])}</p>
@@ -438,7 +516,7 @@ def setUserItem(path_params, body, update=True):
     </div>
     """
     
-    return html_format("アイテム詳細" if update else "アイテム作成", body)
+    return html_format("アイテム詳細" if update else "アイテム作成", body_html)
 
 
 def newUserItem():
