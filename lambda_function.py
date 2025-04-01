@@ -5,7 +5,7 @@ from decimal import Decimal
 
 def decimal_default(obj):
     if isinstance(obj, Decimal):
-        return int(obj)
+        return float(obj)  # float に変換することで小数部分も保持されます
     raise TypeError
 
 

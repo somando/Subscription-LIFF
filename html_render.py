@@ -1,6 +1,6 @@
 import boto3, requests, uuid
 from boto3.dynamodb.conditions import Key, Attr
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 import const, token
 
@@ -201,10 +201,6 @@ def formHtml(text):
             <input type="text" name="name" id="name" required>
         </div>
         <div class="form-item">
-            <label>料金</label>
-            <input type="number" name="price" id="price" min="0" step="any" required>
-        </div>
-        <div class="form-item">
             <label>通貨</label>
             <select name="currency_select" id="currency_select" required onchange="toggleCurrencyOther(this.value)">
                 <option value="JPY">日本円（JPY）</option>
@@ -216,6 +212,10 @@ def formHtml(text):
         <div class="form-item" id="currency_other_container" style="display: none;">
             <label>通貨コード (例: GBP)</label>
             <input type="text" name="currency_other" id="currency_other">
+        </div>
+        <div class="form-item">
+            <label>料金</label>
+            <input type="number" name="price" id="price" min="0" step="any" required>
         </div>
         <div class="form-item">
             <label>次回更新日</label>
@@ -482,7 +482,7 @@ def setUserItem(path_params, body, update=True):
         'id': item_id,
         'user': user_id,
         'name': body.get("name"),
-        'price': Decimal(str(body.get("price"))),
+        'price': Decimal(str(body.get("price"))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
         'next_date': body.get("next_date"),
         'interval': int(body.get("interval")),
         'unit': body.get("unit"),

@@ -1,0 +1,61 @@
+name: AWS Lambda Deploy
+
+on:
+  push:
+    branches:
+      - deploy-production
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-region: ap-northeast-1
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-session-name: GitHubActions
+      
+      - name: get-caller-identity is allowed to run on role
+        run: aws sts get-caller-identity
+      
+      - name: Setup Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.12'
+      
+      - name: Create and Publish Lambda Layer
+        run: |
+          mkdir -p python
+          pip install -r requirements.txt -t python
+          zip -r layer.zip python
+          LAYER_VERSION=$(aws lambda publish-layer-version \
+            --layer-name library-layer \
+            --zip-file fileb://layer.zip \
+            --compatible-runtimes python3.12 \
+            --query Version \
+            --output text)
+          echo "LAYER_VERSION=$LAYER_VERSION" >> $GITHUB_ENV
+
+      - name: Update Lambda Function
+        run: |
+          zip -r function.zip . -x ".git/*" ".github/*" "requirements.txt" "layer.zip" "python/*"
+          aws lambda update-function-code \
+            --function-name ${{ secrets.AWS_LAMBDA_FUNCTION_NAME }} \
+            --zip-file fileb://function.zip \
+            --publish
+          
+          echo "Waiting for Lambda to finish updating code..."
+          sleep 10
+          
+          aws lambda update-function-configuration \
+            --function-name ${{ secrets.AWS_LAMBDA_FUNCTION_NAME }} \
+            --layers arn:aws:lambda:ap-northeast-1:${{ secrets.AWS_ACCOUNT_ID }}:layer:library-layer:$LAYER_VERSION
